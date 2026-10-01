@@ -42,7 +42,8 @@ sections stay on the grid and render empty.
 
 ### `energy`
 
-Power sensors can be W or kW. `battery` is positive while charging.
+Power sensors can be W or kW. `battery` is positive while charging. Without
+solar, leave out `solar` and `solar_today` to hide the solar node and tile.
 
 - Live power: `solar`, `home`, `grid_import`, `grid_export`, `battery`,
   `battery_soc`, `ev`, `ev_state`

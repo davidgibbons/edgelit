@@ -346,9 +346,9 @@ class EdgelitPanelCard extends HTMLElement {
 
     return `<section class="energy" data-act="energy">
       <div class="title"><span>HOME ENERGY</span><span class="aside">${rate ? `<b class="tier ${rate.tier === 'Peak' ? 'peak' : rate.tier === 'Mid-peak' ? 'mid' : ''}">${rate.tier} $${rate.v.toFixed(2)}</b>` : ''}${self === null ? '' : `${rate ? ' · ' : ''}${self}% self-powered`}</span><span class="chev">›</span></div>
-      <div class="flow">
-        <div></div><div></div>${node('solar', 'mdi:white-balance-sunny', sv, su, 'SOLAR', on(solar) ? 'Producing' : 'Idle', '#fbbf24', on(solar))}<div></div><div></div>
-        <div></div><div></div>${line('v', on(solar), '#fbbf24')}<div></div><div></div>
+      <div class="flow ${e.solar ? '' : 'nosolar'}">
+        ${e.solar ? `<div></div><div></div>${node('solar', 'mdi:white-balance-sunny', sv, su, 'SOLAR', on(solar) ? 'Producing' : 'Idle', '#fbbf24', on(solar))}<div></div><div></div>
+        <div></div><div></div>${line('v', on(solar), '#fbbf24')}<div></div><div></div>` : ''}
         ${node('gridn', 'mdi:transmission-tower', gv, gu, 'GRID', on(grid) ? (grid > 0 ? 'Importing' : 'Exporting') : 'Idle', '#94a3b8', on(grid))}
         ${line('h', on(grid), '#94a3b8', grid < 0)}
         ${node('home', 'mdi:home-outline', hv, hu, '', '', '#38bdf8', true)}
@@ -358,7 +358,7 @@ class EdgelitPanelCard extends HTMLElement {
         <div></div><div></div>${node('ev', 'mdi:car-electric-outline', Number.isNaN(evSoc) ? kw(ev)[0] : Math.round(evSoc), Number.isNaN(evSoc) ? kw(ev)[1] : '%', 'EV', evStatus, '#a78bfa', on(ev))}<div></div><div></div>
       </div>
       <div class="stats">
-        ${stat('SOLAR', t(e.solar_today))}
+        ${e.solar_today ? stat('SOLAR', t(e.solar_today)) : ''}
         ${stat('USED', used)}
         ${stat('GRID IN', imp, Number.isNaN(cost) ? '' : `$${cost.toFixed(2)}`)}
         ${stat('EXPORT', t(e.export_today))}
@@ -681,6 +681,7 @@ section { background:var(--card); border:1px solid var(--line); border-radius:26
 .gridn .cap, .batt .cap { position:static; }
 .ev .cap { top:auto; left:100%; margin:0 0 0 10px; align-items:flex-start; top:50%; transform:translateY(-50%); }
 .flow > .nd.gridn, .flow > .nd.batt { margin-top:30px; }
+.flow.nosolar { grid-template-rows: auto 1fr auto; }
 .ln { background:rgba(148,163,184,.18); border-radius:3px; }
 .ln.h { height:3px; width:calc(100% - 12px); } .ln.v { width:3px; height:100%; min-height:14px; }
 .ln.on.h { background: repeating-linear-gradient(90deg, var(--c) 0 9px, transparent 9px 16px); animation: fh .9s linear infinite; }
@@ -688,7 +689,7 @@ section { background:var(--card); border:1px solid var(--line); border-radius:26
 .ln.rev { animation-direction: reverse !important; }
 @keyframes fh { from { background-position:0 0 } to { background-position:16px 0 } }
 @keyframes fv { from { background-position:0 0 } to { background-position:0 16px } }
-.stats { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px; }
+.stats { display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:8px; margin-top:12px; }
 .stat { background:var(--tile); border:1px solid var(--line); border-radius:16px; padding:10px 12px; display:flex; flex-direction:column; }
 .stat span { font-size:11px; letter-spacing:1.5px; color:var(--dim); font-weight:700; } .stat b { font-size:22px; font-weight:800; } .stat small { font-size:12px; color:var(--dim); margin-left:3px; }
 .stat em { font-style:normal; color:#fb923c; font-size:12px; font-weight:700; }
