@@ -755,7 +755,7 @@ section { background:var(--card); border:1px solid var(--line); border-radius:26
 
 /* popup */
 .pop { position:fixed; inset:0; background:rgba(5,7,12,.7); backdrop-filter:blur(6px); display:grid; place-items:center; z-index:10; padding:24px; }
-.sheet { width:min(1900px, 100%); height:100%; background:#10141c; border:1px solid var(--line); border-radius:30px; padding:22px 26px; display:flex; flex-direction:column; gap:16px; }
+.sheet { width:100%; height:100%; background:#10141c; border:1px solid var(--line); border-radius:30px; padding:22px 26px; display:flex; flex-direction:column; gap:16px; }
 .phead { display:flex; align-items:center; gap:18px; } .phead h2 { margin:0; font-size:30px; font-weight:800; }
 .pic { width:64px; height:64px; border-radius:20px; background:linear-gradient(135deg,#4ade80,#a7f3d0); display:grid; place-items:center; color:#064e3b; } .pic ha-icon { --mdc-icon-size:32px; }
 .phead .sub b { color:#f1f5f9; } .phead .dot { margin-right:8px; }
@@ -777,7 +777,7 @@ section { background:var(--card); border:1px solid var(--line); border-radius:26
 .dp { fill:#f1f5f9; font-size:34px; font-weight:800; text-anchor:middle; font-family:Manrope, sans-serif; } .dl { fill:var(--dim); font-size:13px; text-anchor:middle; font-family:Manrope, sans-serif; }
 .legend { flex:1; display:flex; flex-direction:column; gap:12px; font-size:17px; }
 .legend div { display:grid; grid-template-columns:20px 1fr auto 50px; align-items:center; gap:8px; } .legend i { width:14px; height:14px; border-radius:5px; } .legend span { color:var(--dim); text-align:right; }
-.totals { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:12px; }
+.totals { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); gap:12px; margin-top:12px; }
 .totals .stat b { font-size:26px; } .totals .stat em { color:var(--dim); font-weight:500; font-size:14px; }
 .stat b.y { color:#fbbf24; } .stat b.g { color:#4ade80; } .stat.good { background:rgba(34,197,94,.08); border-color:rgba(34,197,94,.25); }
 
@@ -785,6 +785,7 @@ section { background:var(--card); border:1px solid var(--line); border-radius:26
   :host { height:auto; }
   .grid { grid-template-columns: 1fr 1fr; } .grid > section { min-height:480px; }
   header { flex-wrap:wrap; gap:12px; }
+  .totals { grid-auto-flow:row; grid-template-columns:repeat(3,1fr); }
 }
 `;
 
