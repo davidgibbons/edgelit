@@ -530,7 +530,7 @@ class EdgelitPanelCard extends HTMLElement {
     const solar = this._w(e.solar);
     const home = this._w(e.home);
     const batt = this._w(e.battery);
-    const runner = solar >= home * 0.8 ? 'Solar is running the house' : batt < -20 ? 'The battery is running the house' : 'The grid is running the house';
+    const runner = e.solar && solar >= home * 0.8 ? 'Solar is running the house' : batt < -20 ? 'The battery is running the house' : 'The grid is running the house';
     const kw = (w) => Math.abs(w) >= 1000 ? `${(w / 1000).toFixed(1)} kW` : `${Math.round(w)} W`;
 
     const used = t(e.home_today);
@@ -553,7 +553,7 @@ class EdgelitPanelCard extends HTMLElement {
     pop.innerHTML = `<div class="pop"><div class="sheet">
       <div class="phead">
         <div class="pic"><ha-icon icon="mdi:lightning-bolt"></ha-icon></div>
-        <div><h2>Home energy</h2><div class="sub"><i class="dot"></i><b>${runner}</b> · Home ${kw(home)} · Solar ${kw(solar)} · Battery ${Math.round(t(e.battery_soc))}%</div></div>
+        <div><h2>Home energy</h2><div class="sub"><i class="dot"></i><b>${runner}</b> · Home ${kw(home)}${e.solar ? ` · Solar ${kw(solar)}` : ''} · Battery ${Math.round(t(e.battery_soc))}%</div></div>
         <div class="x" data-act="close"><ha-icon icon="mdi:close"></ha-icon></div>
       </div>
       <div class="pbody"><div class="pcard chart">${this._chart()}</div>
@@ -564,7 +564,7 @@ class EdgelitPanelCard extends HTMLElement {
             <svg viewBox="0 0 180 180"><g transform="rotate(-90 90 90)">${arc(fromSolar, '#fbbf24')}${arc(fromBatt, '#34d399')}${arc(fromGrid, '#94a3b8')}</g>
               <text x="90" y="92" class="dp">${self ?? 0}%</text><text x="90" y="116" class="dl">self-powered</text></svg>
             <div class="legend">
-              <div><i style="background:#fbbf24"></i>Straight from solar<b>${n(fromSolar)} kWh</b><span>${pct(fromSolar)}%</span></div>
+              ${e.solar_today ? `<div><i style="background:#fbbf24"></i>Straight from solar<b>${n(fromSolar)} kWh</b><span>${pct(fromSolar)}%</span></div>` : ''}
               <div><i style="background:#34d399"></i>From the battery<b>${n(fromBatt)} kWh</b><span>${pct(fromBatt)}%</span></div>
               <div><i style="background:#94a3b8"></i>Bought from the grid<b>${n(fromGrid)} kWh</b><span>${pct(fromGrid)}%</span></div>
             </div>
@@ -573,7 +573,7 @@ class EdgelitPanelCard extends HTMLElement {
         <div class="pcard">
           <h3>Today's totals</h3><div class="sub">${rate ? `Priced at the time-of-day rate · now ${rate.tier.toLowerCase()} $${rate.v.toFixed(3)}/kWh` : 'Set energy.rate for costs'}</div>
           <div class="totals">
-            <div class="stat"><span>SOLAR MADE</span><b class="y">${n(solarToday)}<small>kWh</small></b><em>${t(e.export_today) > 0 ? `${n(t(e.export_today))} kWh exported` : 'Nothing exported'}</em></div>
+            ${e.solar_today ? `<div class="stat"><span>SOLAR MADE</span><b class="y">${n(solarToday)}<small>kWh</small></b><em>${t(e.export_today) > 0 ? `${n(t(e.export_today))} kWh exported` : 'Nothing exported'}</em></div>` : ''}
             <div class="stat"><span>HOME USED</span><b>${n(used)}<small>kWh</small></b></div>
             <div class="stat"><span>BOUGHT</span><b>${n(imp)}<small>kWh</small></b><em>${Number.isNaN(cost) ? '' : money(cost)}</em></div>
             <div class="stat"><span>BATTERY</span><b>${n(chg)}<small>kWh in</small></b><em>${n(dis)} kWh out</em></div>
@@ -612,16 +612,17 @@ class EdgelitPanelCard extends HTMLElement {
     const area = (pts) => pts.length ? `${path(pts)}L${x(pts.at(-1)[0]).toFixed(1)},${y(0)}L${x(pts[0][0]).toFixed(1)},${y(0)}Z` : '';
     const nowX = x(Date.now());
 
+    const [src, label] = e.solar ? [solar, 'Solar'] : [home, 'Home use'];
     let peak = [0, 0];
-    for (const p of solar) if (p[1] > peak[1]) peak = p;
+    for (const p of src) if (p[1] > peak[1]) peak = p;
     const sub = peak[1] > 0.05
-      ? `Solar peaked at ${peak[1].toFixed(1)} kW around ${new Date(peak[0]).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-      : 'No solar yet today';
+      ? `${label} peaked at ${peak[1].toFixed(1)} kW around ${new Date(peak[0]).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+      : `No ${label.toLowerCase()} yet today`;
     const ticks = [0, 3, 6, 9, 12, 15, 18, 21, 24].map((h) => `<span style="left:${(h / 24) * 100}%">${h === 24 ? '' : new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' })}</span>`).join('');
     const yl = [max, max / 2, 0, -max / 2, -max].map((v, i) => `<span style="top:${i * 25}%">${Math.round(v * 10) / 10}${i === 0 ? ' kW' : ''}</span>`).join('');
 
     return `${head(sub)}
-      <div class="legend2"><span><i style="background:#fbbf24"></i>Solar</span><span><i style="background:#38bdf8"></i>Home</span><span><i style="background:#94a3b8"></i>Grid</span><span><i style="background:#34d399"></i>Battery</span><span><i class="dash"></i>Charge %</span></div>
+      <div class="legend2">${e.solar ? '<span><i style="background:#fbbf24"></i>Solar</span>' : ''}<span><i style="background:#38bdf8"></i>Home</span><span><i style="background:#94a3b8"></i>Grid</span><span><i style="background:#34d399"></i>Battery</span><span><i class="dash"></i>Charge %</span></div>
       <div class="plot">
         <div class="yl">${yl}</div>
         <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
