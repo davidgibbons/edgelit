@@ -1,0 +1,39 @@
+# Keeps the GitHub replica (davidgibbons/edgelit) in sync with this
+# Forgejo primary. GitHub is read-only: HACS installs the cards from it, so every
+# push to main is force-mirrored here.
+#
+# MUST live in .github/workflows/ — Forgejo reads the first of
+# .forgejo/.gitea/.github that exists, so creating .forgejo/workflows/ would
+# silently disable every workflow in this directory.
+#
+# GH_PAT is an org-level Forgejo Actions secret. It needs `workflow` scope
+# (fine-grained: Contents RW + Workflows RW) because this job pushes files under
+# .github/workflows/ to GitHub, which GitHub rejects from a token without it.
+name: mirror-to-github
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never let an older main clobber a newer one mid-flight.
+concurrency:
+  group: mirror-to-github
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Force-push main and tags to GitHub
+        env:
+          GH_PAT: "${{ secrets.GH_PAT }}"
+        run: |
+          set -euo pipefail
+          git remote add github "https://x-access-token:${GH_PAT}@github.com/davidgibbons/edgelit.git"
+          git push --force github HEAD:refs/heads/main
+          git push --force --tags github

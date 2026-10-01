@@ -1,0 +1,14 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: node --check dist/edgelit-panel-card.js && node --check dist/edgelit.js
+      - run: node test/edgelit-hosts-card.test.mjs
