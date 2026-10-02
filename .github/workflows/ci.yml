@@ -10,5 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: node --check dist/edgelit-panel-card.js && node --check dist/edgelit.js
+      - run: node --check dist/edgelit-panel-card.js && node --check dist/edgelit-energy-card.js && node --check dist/edgelit.js
       - run: node test/edgelit-hosts-card.test.mjs
+      - run: node test/edgelit-energy-card.test.mjs

@@ -1,7 +1,7 @@
 # Edgelit
 
 Home Assistant cards sized for the Corsair Xeneon Edge, a 2560×720 touchscreen
-strip. Both are plain JS modules with no build step. On narrower screens they
+strip. All three are plain JS modules with no build step. On narrower screens they
 drop to two columns.
 
 - **`edgelit-panel-card`** draws a whole home view: header, energy flow, quick
@@ -10,14 +10,18 @@ drop to two columns.
 - **`edgelit-hosts-card`** draws one rack of machines: a stacked 24-hour power
   chart, a card per host with load and memory plus either pods or inference
   activity, and an infrastructure or Claude-usage card at the end.
+- **`edgelit-energy-card`** draws live power as a flow from the grid and
+  battery through the house to each circuit and the devices under it, with
+  particles that move faster on busier circuits.
 
 ## Install
 
 1. In HACS, add this repository as a custom repository of type **Dashboard**.
 2. Install **Edgelit**. HACS registers `/hacsfiles/edgelit/edgelit.js`, which
-   loads both cards.
+   loads all three cards.
 3. Use the cards in a **panel** view, one card per view:
-   `type: custom:edgelit-panel-card` or `type: custom:edgelit-hosts-card`.
+   `type: custom:edgelit-panel-card`, `custom:edgelit-hosts-card` or
+   `custom:edgelit-energy-card`.
 
 After an update, reload any open dashboard page. A page that was open before
 the install shows "Configuration error" for these cards until it reloads.
@@ -113,13 +117,40 @@ still render and the header says "Metrics unavailable".
 Today's cost multiplies today's energy by the current rate. A rate that
 changes during the day makes that figure an estimate.
 
+## `edgelit-energy-card`
+
+The card reads its tree from Home Assistant's Energy settings, so it needs no
+entity list:
+
+- **Sources**: each grid and battery source with a power sensor. A charging
+  battery shows as a load under the house. Solar is not drawn.
+- **Circuits**: each individual device with a power sensor.
+- **Devices**: a device whose "upstream device" (`included_in_stat`) is a
+  circuit is drawn under that circuit. Deeper levels are not drawn.
+- **Untracked**: the house minus its circuits, and a circuit minus its devices.
+
+Devices without a power sensor are left out. Names and colors follow the
+Energy settings, in order, so reordering them recolors the circuits.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `title` | `WHERE YOUR POWER IS GOING` | Header text. |
+| `home` | sum of sources | Power sensor for total house use, when the sources alone don't give it. |
+| `price` | none | $/kWh sensor; adds `$/hr` to the header. |
+| `min_watts` | `100` | Circuits below this fold into "Other"; devices below it fold into their circuit. |
+| `colors` | built-in palette | Map of display name to color. |
+
+The card re-reads the Energy settings every 5 minutes, so a change there shows
+up without a reload.
+
 ## Develop
 
-Run the tests, which drive the hosts card under Node with stubbed DOM, `hass`
-and `fetch`:
+Run the tests, which drive the cards under Node with stubbed DOM, `hass` and
+`fetch`:
 
 ```sh
 node test/edgelit-hosts-card.test.mjs
+node test/edgelit-energy-card.test.mjs
 ```
 
 A card only needs a `hass` object, so a static page with mock states can render
