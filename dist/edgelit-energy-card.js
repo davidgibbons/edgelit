@@ -25,6 +25,35 @@ export const watts = (s) => {
   return /^kW$/i.test(s.attributes?.unit_of_measurement || '') ? v * 1000 : v;
 };
 
+const HOUR = 3600000;
+
+// The house's kWh and grid cost over the last `hours`, from 5-minute
+// statistic changes. HA names the cost sensors it creates in `energy/info`.
+export function totals(prefs, costSensors, stats, hours, now = Date.now()) {
+  const since = now - hours * HOUR;
+  const sum = (id) => (id ? (stats[id] || []).reduce((a, p) => {
+    const t = typeof p.start === 'number' ? p.start : Date.parse(p.start);
+    return t >= since && p.change != null ? a + p.change : a;
+  }, 0) : 0);
+  let kwh = 0;
+  let cost = 0;
+  for (const s of prefs?.energy_sources || []) {
+    if (s.type === 'grid') {
+      kwh += sum(s.stat_energy_from) - sum(s.stat_energy_to);
+      cost += sum(s.stat_cost || costSensors[s.stat_energy_from]) - sum(s.stat_compensation || costSensors[s.stat_energy_to]);
+    }
+    if (s.type === 'battery') kwh += sum(s.stat_energy_from) - sum(s.stat_energy_to);
+  }
+  return { kwh, cost };
+}
+
+// Statistic ids `totals` reads.
+export function totalIds(prefs, costSensors) {
+  return (prefs?.energy_sources || []).flatMap((s) => (s.type === 'grid'
+    ? [s.stat_energy_from, s.stat_energy_to, s.stat_cost || costSensors[s.stat_energy_from], s.stat_compensation || costSensors[s.stat_energy_to]]
+    : s.type === 'battery' ? [s.stat_energy_from, s.stat_energy_to] : [])).filter(Boolean);
+}
+
 export const fmtW = (w) => (w >= 1000 ? `${(w / 1000).toFixed(1)} kW` : `${Math.round(w)} W`);
 
 export const crossSeconds = (w) => 2.5 * (2400 / Math.max(w, 1)) ** 0.35;
@@ -362,7 +391,7 @@ class EdgelitEnergyCard extends HTMLElement {
   _init() {
     if (!this.shadowRoot) {
       this.attachShadow({ mode: 'open' }).innerHTML = `<style>${STYLE}</style>
-        <div id="main"><header><div class="title" id="title"></div><div class="pill" id="total"></div></header>
+        <div id="main"><header><div class="title" id="title"></div><div class="pills"><div class="pill" id="h8"></div><div class="pill" id="h24"></div><div class="pill" id="total"></div></div></header>
         <div id="flow"><svg id="svg"></svg><canvas id="cv"></canvas></div></div>`;
       this.shadowRoot.addEventListener('click', (e) => {
         const el = e.target.closest('[data-id]');
@@ -386,8 +415,19 @@ class EdgelitEnergyCard extends HTMLElement {
     try {
       this._prefs = await this._hass.callWS({ type: 'energy/get_prefs' });
       this._update();
+      const { cost_sensors: costs } = await this._hass.callWS({ type: 'energy/info' });
+      const stats = await this._hass.callWS({
+        type: 'recorder/statistics_during_period', start_time: new Date(Date.now() - 24 * HOUR).toISOString(),
+        statistic_ids: totalIds(this._prefs, costs), period: '5minute', types: ['change'], units: { energy: 'kWh' },
+      });
+      const pill = (id, h) => {
+        const t = totals(this._prefs, costs, stats, h);
+        this.shadowRoot.getElementById(id).innerHTML = `<span class="dim">${h}h</span><b>${t.kwh.toFixed(1)} kWh</b><span class="dim">$${t.cost.toFixed(2)}</span>`;
+      };
+      pill('h8', 8);
+      pill('h24', 24);
     } catch (e) {
-      console.warn('edgelit-energy-card: energy/get_prefs failed', e);
+      console.warn('edgelit-energy-card: loading Energy data failed', e);
     }
   }
 
@@ -505,6 +545,7 @@ const STYLE = `
 header { display:flex; justify-content:space-between; align-items:center; }
 .title { color:var(--dim); font-size:16px; font-weight:700; letter-spacing:2px; }
 .pill { display:flex; align-items:center; gap:10px; height:48px; padding:0 18px; border-radius:16px; background:rgba(30,36,48,.72); border:1px solid rgba(255,255,255,.07); font-size:17px; font-weight:600; }
+.pills { display:flex; gap:12px; } .pill:empty { display:none; }
 .pill b { font-size:22px; } .dim { color:var(--dim); font-weight:500; }
 #flow { flex:1; min-height:0; position:relative; }
 #flow svg, #flow canvas { position:absolute; inset:0; width:100%; height:100%; }

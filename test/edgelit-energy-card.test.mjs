@@ -96,5 +96,19 @@ const s = geo.streams.find((x) => x.key === 'home>sensor.office');
 const end = card.pointAt(s, 1, 1);
 assert.ok(Math.abs(end[0] - geo.nodes.find((n) => n.id === 'sensor.office').x) < 1e-9);
 
+// Totals: house kWh is grid in plus battery out minus battery in; cost is the
+// grid's, from the cost sensor HA created when the source has no stat_cost.
+const tp = { energy_sources: [
+  { type: 'grid', stat_energy_from: 'imp', stat_energy_to: null, stat_cost: null },
+  { type: 'battery', stat_energy_from: 'dis', stat_energy_to: 'chg' },
+] };
+const now = Date.parse('2026-10-02T12:00:00Z');
+const at = (h, change) => ({ start: now - h * 3600000, change });
+const stats = { imp: [at(20, 10), at(2, 3)], dis: [at(5, 4)], chg: [at(23, 6)], 'sensor.imp_cost': [at(20, 1.5), at(2, 0.5)] };
+const costs = { imp: 'sensor.imp_cost' };
+assert.deepEqual(card.totalIds(tp, costs), ['imp', 'sensor.imp_cost', 'dis', 'chg']);
+assert.deepEqual(card.totals(tp, costs, stats, 24, now), { kwh: 11, cost: 2 });
+assert.deepEqual(card.totals(tp, costs, stats, 8, now), { kwh: 7, cost: 0.5 });
+
 assert.ok(registry['edgelit-energy-card'], 'card registers');
 console.log('ok');

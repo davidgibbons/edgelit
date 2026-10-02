@@ -148,8 +148,10 @@ in the Energy settings, so reordering them recolors the diagram.
 | `max_devices` | `20` | Named children per parent before the smallest fold into "Other". |
 | `colors` | built-in palette | Map of display name to color. |
 
-The card re-reads the Energy settings every 5 minutes, so a change there shows
-up without a reload.
+The header shows the house's kWh and grid cost over the last 8 and 24 hours,
+from 5-minute statistics. Cost comes from the grid source's cost statistic,
+so the grid needs a price in the Energy settings. The card re-reads both
+every 5 minutes, so a change there shows up without a reload.
 
 ## Develop
 
