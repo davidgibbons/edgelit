@@ -254,8 +254,12 @@ class EdgelitHostsCard extends HTMLElement {
       : !ready ? '<span class="bad">● Not ready</span>'
         : m.crash.length ? `<span class="bad">● ${m.crash.length} crashloop${m.crash.length > 1 ? 's' : ''}</span>`
           : `<span class="ok">● Ready${m.up ? ` · ${fmtUptime(m.up)}` : ''}</span>`;
-    // Pulse faster as the draw rises: 4 s idle down to 1.2 s at 150 W.
-    const pulse = ok ? Math.max(1.2, 4 - (w / 150) * 2.8).toFixed(1) : 0;
+    // Pulse faster as the draw rises: 4 s idle down to 1.5 s at 150 W, in 0.5 s
+    // steps so ordinary power jitter keeps the same period.
+    const pulse = ok ? Math.max(1.5, Math.round((4 - (w / 150) * 2.8) * 2) / 2) : 0;
+    // Every update rebuilds the ring. Phasing the animation to the wall clock
+    // lets the new one carry on where the old one was instead of restarting.
+    const phase = pulse ? -((Date.now() / 1000) % pulse).toFixed(2) : 0;
     const bar = (label, pct, text, fill) => `<div class="mt"><span class="l">${label}</span><div class="mb">${fill ?? `<i style="width:${Number.isNaN(pct) || pct === undefined ? 0 : Math.min(pct, 100)}%;background:${color}"></i>`}</div><span class="n">${text}</span></div>`;
     const gb = (b) => (b / 1e9).toFixed(0);
     const memPct = (m.used / m.total) * 100;
@@ -286,7 +290,7 @@ class EdgelitHostsCard extends HTMLElement {
     return `<section class="host" data-id="${h.power}" style="--c:${color}">
       <div class="title"><span>${esc(h.name.toUpperCase())}</span><span class="aside">${status}</span></div>
       <div class="top">
-        <div class="ring ${ok ? 'on' : ''}" style="${pulse ? `--sp:${pulse}s` : ''}"><div class="v">${ok ? Math.round(w) : '—'}</div><small>W</small></div>
+        <div class="ring ${ok ? 'on' : ''}" style="${pulse ? `--sp:${pulse}s;animation-delay:${phase}s` : ''}"><div class="v">${ok ? Math.round(w) : '—'}</div><small>W</small></div>
         <div class="cost"><b>${Number.isNaN(costPerHour(w, rate)) ? '—' : `$${costPerHour(w, rate).toFixed(3)}`}/hr</b><span>${Number.isNaN(wh) ? '—' : (wh / 1000).toFixed(2)} kWh today</span></div>
       </div>
       ${middle}
