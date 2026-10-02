@@ -1,17 +1,13 @@
-// Live power as a flow from the sources through the house to each circuit and
-// the devices under it. The graph is built the way Home Assistant's own power
-// sankey card builds it (src/panels/lovelace/cards/energy/hui-power-sankey-card.ts
-// and common/sankey.ts in home-assistant/frontend), from the Energy settings, so
-// both always show the same devices. Plain HTMLElement, no build step (see
-// README.md).
+// Live power flow. buildGraph ports Home Assistant's power sankey
+// (home-assistant/frontend: cards/energy/hui-power-sankey-card.ts and
+// common/sankey.ts) so both cards show the same devices.
 
 const FONT = 'https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap';
 const DEAD = ['unavailable', 'unknown'];
 const PALETTE = ['#38bdf8', '#a78bfa', '#34d399', '#f472b6', '#fb923c', '#fbbf24', '#f87171', '#2dd4bf',
   '#818cf8', '#a3e635', '#e879f9', '#60a5fa', '#facc15', '#c084fc', '#5eead4', '#fda4af', '#93c5fd'];
 const COLOR = { grid: '#60a5fa', battery: '#34d399', battery_in: '#4ade80', grid_return: '#a78bfa', home: '#e2e8f0', other: '#94a3b8', untracked: '#64748b' };
-// HA's constants: devices under 0.1% of the house fold into "Other", and a
-// parent shows at most 20 named children.
+// HA's values.
 const MIN_FACTOR = 0.001;
 const MAX_DEVICES = 20;
 const MAX_PARTICLES = 150;
@@ -22,7 +18,6 @@ const PREFS_MS = 5 * 60000;
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-// A power state in watts, or null when it has no usable value.
 export const watts = (s) => {
   if (!s || DEAD.includes(s.state)) return null;
   const v = parseFloat(s.state);
@@ -32,21 +27,17 @@ export const watts = (s) => {
 
 export const fmtW = (w) => (w >= 1000 ? `${(w / 1000).toFixed(1)} kW` : `${Math.round(w)} W`);
 
-// Seconds for a particle to cross a stream carrying `w` watts, and how many
-// particles ride it.
 export const crossSeconds = (w) => 2.5 * (2400 / Math.max(w, 1)) ** 0.35;
 export const particleCount = (w) => Math.max(2, Math.round(Math.sqrt(w) / 5));
 
-// The flow graph: nodes `{id, label, value, color, col, entityId, dead}` and
-// links `{source, target, value}`. Columns are sources, home, floors, areas,
-// then one per level of device nesting; empty ones are dropped.
+// Columns: sources, home, floors, areas, then one per level of device nesting.
 export function buildGraph(prefs, hass, { groupByArea = true, groupByFloor = true, maxDevices = MAX_DEVICES, colors = {} } = {}) {
   const states = hass.states;
   const power = (id) => watts(states[id]) ?? 0;
   const nodes = [];
   const links = [];
 
-  // Sources, routed in HA's priority order (no solar).
+  // HA's source routing, minus solar.
   let fromGrid = 0;
   let toGrid = 0;
   let net = 0;
@@ -82,7 +73,6 @@ export function buildGraph(prefs, hass, { groupByArea = true, groupByFloor = tru
   if (toBat > 0) { add({ id: 'battery_in', label: 'Battery', value: toBat, col: 1, entityId: sourceId('battery') }); if (gridToBat > 0) links.push({ source: 'grid', target: 'battery_in', value: gridToBat }); }
   if (toGrid > 0) { add({ id: 'grid_return', label: 'Grid', value: toGrid, col: 1, entityId: sourceId('grid') }); if (batToGrid > 0) links.push({ source: 'battery', target: 'grid_return', value: batToGrid }); }
 
-  // Devices, as in HA's buildSankeyDeviceNodes with getId = stat_rate.
   const devices = prefs?.device_consumption || [];
   const threshold = used * MIN_FACTOR;
   const byStat = new Map(devices.map((d) => [d.stat_consumption, d]));
@@ -161,7 +151,6 @@ export function buildGraph(prefs, hass, { groupByArea = true, groupByFloor = tru
     if (rest > 1) place({ id: `untracked_${pid}`, label: 'Untracked', value: rest, color: colors.Untracked || COLOR.untracked }, pid);
   }
 
-  // Floor and area grouping for top-level devices, as in buildSankeyLayout.
   const top = devNodes.filter((n) => !parentOf[n.id]);
   if (groupByArea || groupByFloor) {
     const groups = new Map();
@@ -207,8 +196,7 @@ export function buildGraph(prefs, hass, { groupByArea = true, groupByFloor = tru
   return { nodes, links: links.filter((l) => l.value > 0), used };
 }
 
-// Device ids to fold into their parent's "Other" because the parent has more
-// than `max` rendered children (HA's findDevicesOverCap).
+// HA's findDevicesOverCap.
 function overCap(devices, max, rendered, values, parentOf) {
   const grouped = new Set();
   if (!max || max <= 0) return grouped;
@@ -237,7 +225,6 @@ function overCap(devices, max, rendered, values, parentOf) {
   return grouped;
 }
 
-// Devices split into columns: top-level parents, then their children, and so on.
 function deviceSections(parentOf, devs) {
   const parents = Object.values(parentOf);
   const head = devs.filter((n) => parents.includes(n.id) && !(n.id in parentOf));
@@ -247,7 +234,6 @@ function deviceSections(parentOf, devs) {
   return [head, ...deviceSections(rest, devs.filter((n) => !head.includes(n)))];
 }
 
-// The area and floor of an entity, from its own area or its device's.
 function context(hass, entityId) {
   const ent = hass.entities?.[entityId];
   const areaId = ent?.area_id || hass.devices?.[ent?.device_id]?.area_id;
@@ -256,8 +242,6 @@ function context(hass, entityId) {
   return { area, floor };
 }
 
-// `to` with every value moved `k` of the way from `from`, so streams ease
-// instead of jumping. New nodes and links grow from zero.
 export function easeGraph(from, to, k) {
   if (!from || k >= 1) return to;
   const nv = new Map(from.nodes.map((n) => [n.id, n.value]));
@@ -273,8 +257,8 @@ export function easeGraph(from, to, k) {
 
 const LAST = (id) => /^(other|untracked)/.test(id);
 
-// Node boxes and link bands for a W×H area. Each column is ordered by where
-// its incoming flow leaves the previous column, so streams don't cross.
+// Each column is ordered by where its flow leaves the previous one, so
+// streams don't cross.
 export function layout(graph, W, H) {
   const pad = 30;
   const avail = H - 2 * pad;
@@ -332,8 +316,7 @@ export function layout(graph, W, H) {
   return { ncol, nodes: [...byId.values()], streams };
 }
 
-// Point at parameter u ∈ [0, 1] along a stream's centerline at fraction f of
-// its width: a straight run from xs[0] to xs[1], then a flat cubic to xs[2].
+// The same curve as the SVG path, so particles stay on their stream.
 const bez = (p0, p1, p2, p3, u) => {
   const v = 1 - u;
   return v * v * v * p0 + 3 * v * v * u * p1 + 3 * v * u * u * p2 + u * u * u * p3;
@@ -408,7 +391,6 @@ class EdgelitEnergyCard extends HTMLElement {
     }
   }
 
-  // Take new power values and start easing toward them.
   _update() {
     if (!this._prefs || !this._hass) return;
     this._updated = Date.now();
@@ -437,7 +419,6 @@ class EdgelitEnergyCard extends HTMLElement {
     this._raf = requestAnimationFrame(tick);
   }
 
-  // Rebuild the streams from the eased graph.
   _draw(now = performance.now()) {
     if (!this._target) return;
     if (!this._size) {
@@ -457,7 +438,6 @@ class EdgelitEnergyCard extends HTMLElement {
   }
 
   _svg(g) {
-    // Streams brighten from the sources toward the far columns.
     const op = (c) => (0.1 + (0.5 * c) / (g.ncol - 1)).toFixed(2);
     const defs = [];
     const paths = g.streams.map((s, i) => {
@@ -483,8 +463,7 @@ class EdgelitEnergyCard extends HTMLElement {
     return `<defs>${defs.join('')}</defs><g class="streams">${paths.join('')}</g>${items.join('')}`;
   }
 
-  // Move the particles and paint them. Each keeps its place `t` along its
-  // stream, so motion carries on through re-layouts.
+  // Particles keep `t` across re-layouts, so motion doesn't jump.
   _animate(dt) {
     const cv = this.shadowRoot.getElementById('cv');
     const ctx = cv.getContext?.('2d');

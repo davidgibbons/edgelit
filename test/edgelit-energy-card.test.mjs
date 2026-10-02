@@ -1,6 +1,4 @@
-// Drives the pure helpers of edgelit-energy-card against a canned
-// `energy/get_prefs` payload and canned hass registries. The graph must match
-// what Home Assistant's power sankey card draws for the same input.
+// The graph must match what HA's power sankey draws for the same input.
 import assert from 'node:assert/strict';
 
 globalThis.HTMLElement = class {};
@@ -11,7 +9,6 @@ globalThis.window = {};
 const card = await import('../dist/edgelit-energy-card.js');
 const st = (v, unit = 'W') => ({ state: String(v), attributes: { unit_of_measurement: unit } });
 
-// Units and formulas
 assert.equal(card.watts(st(1.5, 'kW')), 1500);
 assert.equal(card.watts(st(42)), 42);
 assert.equal(card.watts(st('unavailable')), null);
@@ -70,14 +67,12 @@ assert.ok(!node(g, 'sensor.lamp') && !node(g, 'sensor.clock'));
 assert.ok(link(g, 'sensor.office', 'sensor.chg'), 'lone small device keeps its name');
 assert.ok(!node(g, 'np_kwh'), 'devices without a power sensor are left out');
 
-// Untracked: per parent and at the root.
 assert.equal(node(g, 'untracked_sensor.office').value, 246);
 assert.equal(node(g, 'untracked').value, 6000 - 2000 - 2000 - 900 - 5);
 
 // Columns: sources, home, areas, circuits, devices; empty floor column dropped.
 assert.deepEqual(['grid', 'home', 'area_garage', 'sensor.office', 'sensor.pc'].map((id) => node(g, id).col), [0, 1, 2, 3, 4]);
 
-// Without grouping every circuit hangs off home.
 const flat = card.buildGraph(prefs, hass, { groupByArea: false, groupByFloor: false });
 assert.ok(link(flat, 'home', 'sensor.ac') && !node(flat, 'area_garage'));
 
@@ -87,17 +82,14 @@ const capped = card.buildGraph(prefs, hass, { groupByArea: false, maxDevices: 2 
 assert.ok(node(capped, 'sensor.tub') && !node(capped, 'sensor.office') && !node(capped, 'sensor.pc'));
 assert.equal(node(capped, 'other_home').value, 2905);
 
-// A discharging battery feeds the house alongside the grid.
 const dis = card.buildGraph(prefs, { ...hass, states: { ...hass.states, 'sensor.grid': st(1000), 'sensor.bat': st(5000) } });
 assert.equal(link(dis, 'battery', 'home').value, 5000);
 assert.equal(link(dis, 'grid', 'home').value, 1000);
 
-// Easing moves values part way and grows new nodes from zero.
 const half = card.easeGraph({ nodes: [], links: [], used: 0 }, g, 0.5);
 assert.equal(half.used, 3000);
 assert.equal(node(half, 'area_garage').value, 2000);
 
-// Layout keeps nodes inside the box and links attached to both ends.
 const geo = card.layout(g, 2560, 600);
 for (const n of geo.nodes) assert.ok(n.top >= 0 && n.top + n.h <= 600, `${n.label} fits`);
 const s = geo.streams.find((x) => x.key === 'home>sensor.office');
