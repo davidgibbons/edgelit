@@ -1,15 +1,15 @@
-// Live power as a flow from the sources through the house to each circuit and
-// the devices under it. The tree comes from Home Assistant's Energy settings:
-// each device's `stat_rate` is its live power and `included_in_stat` names its
-// parent. Plain HTMLElement, no build step (see README.md).
+// Live power flow. buildGraph ports Home Assistant's power sankey
+// (home-assistant/frontend: cards/energy/hui-power-sankey-card.ts and
+// common/sankey.ts) so both cards show the same devices.
 
 const FONT = 'https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap';
 const DEAD = ['unavailable', 'unknown'];
 const PALETTE = ['#38bdf8', '#a78bfa', '#34d399', '#f472b6', '#fb923c', '#fbbf24', '#f87171', '#2dd4bf',
   '#818cf8', '#a3e635', '#e879f9', '#60a5fa', '#facc15', '#c084fc', '#5eead4', '#fda4af', '#93c5fd'];
-const OTHER = '#94a3b8';
-const UNTRACKED = '#64748b';
-const CHARGING = '#4ade80';
+const COLOR = { grid: '#60a5fa', battery: '#34d399', battery_in: '#4ade80', grid_return: '#a78bfa', home: '#e2e8f0', other: '#94a3b8', untracked: '#64748b' };
+// HA's values.
+const MIN_FACTOR = 0.001;
+const MAX_DEVICES = 20;
 const MAX_PARTICLES = 150;
 const FRAME_MS = 1000 / 30;
 const UPDATE_MS = 5000;
@@ -18,7 +18,6 @@ const PREFS_MS = 5 * 60000;
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-// A power state in watts, or null when it has no usable value.
 export const watts = (s) => {
   if (!s || DEAD.includes(s.state)) return null;
   const v = parseFloat(s.state);
@@ -28,150 +27,296 @@ export const watts = (s) => {
 
 export const fmtW = (w) => (w >= 1000 ? `${(w / 1000).toFixed(1)} kW` : `${Math.round(w)} W`);
 
-// Seconds for a particle to cross a stream carrying `w` watts, and how many
-// particles ride it.
 export const crossSeconds = (w) => 2.5 * (2400 / Math.max(w, 1)) ** 0.35;
 export const particleCount = (w) => Math.max(2, Math.round(Math.sqrt(w) / 5));
 
-// The i-th child of a circuit: the circuit's color, lighter or darker by turns.
-export const shade = (hex, i) => {
-  const n = parseInt(hex.slice(1), 16);
-  const k = ((i % 2 ? -1 : 1) * (0.18 + 0.12 * Math.floor(i / 2)));
-  const ch = (v) => Math.round(k > 0 ? v + (255 - v) * k : v * (1 + k));
-  return `#${[n >> 16, (n >> 8) & 255, n & 255].map((v) => ch(v).toString(16).padStart(2, '0')).join('')}`;
-};
+// Columns: sources, home, floors, areas, then one per level of device nesting.
+export function buildGraph(prefs, hass, { groupByArea = true, groupByFloor = true, maxDevices = MAX_DEVICES, colors = {} } = {}) {
+  const states = hass.states;
+  const power = (id) => watts(states[id]) ?? 0;
+  const nodes = [];
+  const links = [];
 
-// The flow tree from `energy/get_prefs` and the current states: live sources,
-// the total through the house, and tier-1 nodes (circuits, plus a charging
-// battery, "Other" and "Untracked") each with tier-2 children.
-export function buildTree(prefs, states, { home, minWatts = 100, colors = {} } = {}) {
-  const sources = [];
-  let charging = 0;
-  let battery = null;
+  // HA's source routing, minus solar.
+  let fromGrid = 0;
+  let toGrid = 0;
+  let net = 0;
   for (const s of prefs?.energy_sources || []) {
-    if (!s.stat_rate || (s.type !== 'grid' && s.type !== 'battery')) continue;
-    const v = watts(states[s.stat_rate]);
-    const name = s.name || (s.type === 'grid' ? 'Grid' : 'Battery');
-    if (s.type === 'battery') battery = { id: s.stat_rate, w: v ?? 0 };
-    // A charging battery is a load on the house; exporting grid power is ignored.
-    if (s.type === 'battery' && v < 0) charging += -v;
-    else if (v > 0) sources.push({ key: `src:${s.stat_rate}`, name, id: s.stat_rate, w: v });
+    if (!s.stat_rate) continue;
+    const v = power(s.stat_rate);
+    if (s.type === 'grid') { if (v > 0) fromGrid += v; else toGrid -= v; }
+    if (s.type === 'battery') net += v;
   }
+  const fromBat = Math.max(net, 0);
+  const toBat = Math.max(-net, 0);
+  const used = Math.max(fromGrid + fromBat - toGrid - toBat, 0);
+  let gridLeft = fromGrid;
+  let batLeft = fromBat;
+  let usedLeft = used;
+  const excess = Math.max(0, Math.min(toBat, gridLeft - usedLeft));
+  let gridToBat = excess;
+  gridLeft -= excess;
+  const batToGrid = Math.min(batLeft, toGrid);
+  batLeft -= batToGrid;
+  const more = Math.min(gridLeft, toBat - excess);
+  gridToBat += more;
+  gridLeft -= more;
+  const usedBat = Math.min(batLeft, usedLeft);
+  usedLeft -= usedBat;
+  const usedGrid = Math.min(usedLeft, gridLeft);
 
-  const devs = (prefs?.device_consumption || []).filter((d) => d.stat_rate);
-  const byStat = new Map(devs.map((d) => [d.stat_consumption, d]));
-  const node = (d, color) => {
-    const w = watts(states[d.stat_rate]);
-    return { key: d.stat_rate, name: d.name || d.stat_consumption, id: d.stat_rate, w: Math.max(w ?? 0, 0), dead: w === null, color: colors[d.name] || color, children: [] };
+  const sourceId = (type) => prefs.energy_sources.find((s) => s.type === type && s.stat_rate)?.stat_rate;
+  const add = (n) => { nodes.push({ color: COLOR[n.id], ...n }); };
+  if (fromGrid > 0) { add({ id: 'grid', label: 'Grid', value: fromGrid, col: 0, entityId: sourceId('grid') }); links.push({ source: 'grid', target: 'home', value: usedGrid }); }
+  if (fromBat > 0) { add({ id: 'battery', label: 'Battery', value: fromBat, col: 0, entityId: sourceId('battery') }); links.push({ source: 'battery', target: 'home', value: usedBat }); }
+  add({ id: 'home', label: 'Home', value: used, col: 1 });
+  if (toBat > 0) { add({ id: 'battery_in', label: 'Battery', value: toBat, col: 1, entityId: sourceId('battery') }); if (gridToBat > 0) links.push({ source: 'grid', target: 'battery_in', value: gridToBat }); }
+  if (toGrid > 0) { add({ id: 'grid_return', label: 'Grid', value: toGrid, col: 1, entityId: sourceId('grid') }); if (batToGrid > 0) links.push({ source: 'battery', target: 'grid_return', value: batToGrid }); }
+
+  const devices = prefs?.device_consumption || [];
+  const threshold = used * MIN_FACTOR;
+  const byStat = new Map(devices.map((d) => [d.stat_consumption, d]));
+  const values = new Map();
+  const rendered = new Set();
+  for (const d of devices) {
+    if (!d.stat_rate) continue;
+    const v = power(d.stat_rate);
+    values.set(d.stat_rate, v);
+    if (v >= threshold) rendered.add(d.stat_rate);
+  }
+  const renderedId = (stat) => {
+    const id = byStat.get(stat)?.stat_rate;
+    return id && rendered.has(id) ? id : undefined;
   };
-  const tier1 = devs.filter((d) => !byStat.has(d.included_in_stat));
-  const nodes = tier1.map((d, i) => node(d, PALETTE[i % PALETTE.length]));
-  const byId = new Map(tier1.map((d, i) => [d.stat_consumption, nodes[i]]));
-  for (const d of devs) {
-    const parent = byId.get(d.included_in_stat);
-    if (parent) parent.children.push(node(d, null));
-  }
-  for (const n of nodes) {
-    const kept = n.children.filter((c) => c.w >= minWatts).sort((a, b) => b.w - a.w);
-    kept.forEach((c, i) => { c.key = `${n.key}/${c.key}`; c.color ||= shade(n.color, i); });
-    const rest = n.w - kept.reduce((a, c) => a + c.w, 0);
-    if (kept.length && rest >= minWatts) kept.push({ key: `${n.key}/untracked`, name: 'Untracked', w: rest, color: UNTRACKED, children: [] });
-    n.children = kept;
-  }
-  if (charging > 0) nodes.push({ key: 'charging', name: 'Battery', id: battery.id, w: charging, color: CHARGING, children: [] });
+  // First rendered ancestor; bounded because included_in_stat can be cyclic.
+  const effectiveParent = (stat) => {
+    for (let cur = stat, hops = 0; cur && hops < devices.length; hops++) {
+      const r = renderedId(cur);
+      if (r) return r;
+      const d = byStat.get(cur);
+      if (!d) return undefined;
+      cur = d.included_in_stat;
+    }
+    return undefined;
+  };
+  for (const id of overCap(devices, maxDevices, rendered, values, (d) => effectiveParent(d.included_in_stat))) rendered.delete(id);
 
-  const homeW = home ? watts(states[home]) : null;
-  const total = homeW !== null ? Math.max(homeW, 0) + charging : sources.reduce((a, s) => a + s.w, 0);
-  const shown = nodes.filter((n) => n.w >= minWatts).sort((a, b) => b.w - a.w);
-  const other = nodes.filter((n) => n.w < minWatts).reduce((a, n) => a + n.w, 0);
-  if (other > 0) shown.push({ key: 'other', name: 'Other', w: other, color: colors.Other || OTHER, children: [] });
-  const untracked = total - nodes.reduce((a, n) => a + n.w, 0);
-  if (untracked > 0) shown.push({ key: 'untracked', name: 'Untracked', w: untracked, color: colors.Untracked || UNTRACKED, children: [] });
-  return { sources, battery, charging, total, nodes: shown };
-}
-
-// `to` with every power moved `k` of the way from its value in `from`, so
-// stream widths ease instead of jumping. Nodes new to `to` grow from zero.
-export function easeTree(from, to, k) {
-  if (!from || k >= 1) return to;
-  const old = new Map();
-  const walk = (list) => (list || []).forEach((n) => { old.set(n.key, n.w); walk(n.children); });
-  walk(from.sources); walk(from.nodes);
-  const mix = (n) => ({ ...n, w: (old.get(n.key) ?? 0) + (n.w - (old.get(n.key) ?? 0)) * k, children: (n.children || []).map(mix) });
-  return { ...to, total: from.total + (to.total - from.total) * k, sources: to.sources.map(mix), nodes: to.nodes.map(mix) };
-}
-
-// Node and stream geometry for a W×H box. Streams carry x0..x3 and the band
-// edges the particles ride between.
-export function layout(tree, W, H) {
-  const pad = 24;
-  const avail = H - 2 * pad;
-  const hasKids = tree.nodes.some((n) => n.children.length);
-  const x0 = W * 0.1;
-  const x1 = W * 0.33;
-  const x2 = W * (hasKids ? 0.6 : 0.78);
-  const x3 = W * 0.84;
-  // Meter skew can put the loads above the sources; size for the larger.
-  const total = Math.max(tree.total, tree.nodes.reduce((a, n) => a + n.w, 0));
-  const scale = total > 0 ? (avail * 0.7) / total : 0;
-  const hh = total * scale;
-  const homeTop = pad + (avail - hh) / 2;
-
-  // Each node gets room for its label; shrink that room when many nodes crowd.
-  let room = 24;
-  const fit = () => tree.nodes.reduce((a, n) => a + Math.max(n.w * scale, room) + 4, 0) > avail;
-  while (room > 14 && fit()) room -= 1;
-  const slots = tree.nodes.map((n) => Math.max(n.w * scale, room));
-  const gap = tree.nodes.length > 1 ? Math.max((avail - slots.reduce((a, s) => a + s, 0)) / (tree.nodes.length - 1), 4) : 0;
-  let y = pad;
-  let hy = homeTop;
-  const streams = [];
-  const nodes = tree.nodes.map((n, i) => {
-    const h = n.w * scale;
-    const top = y + (slots[i] - h) / 2;
-    y += slots[i] + gap;
-    const s = { key: n.key, w: n.w, color: n.color, xs: [x0, x1, x2], a: [hy, hy + h], b: [top, top + h], tier: 1 };
-    hy += h;
-    streams.push(s);
-    return { ...n, x: x2, top, h, stream: s };
+  const label = (d) => d.name || states[d.stat_rate]?.attributes?.friendly_name || d.stat_rate;
+  const colorOf = (d, idx) => colors[label(d)] || PALETTE[idx % PALETTE.length];
+  const devNodes = [];
+  const parentOf = {};
+  const small = new Map();
+  const smallStats = new Set();
+  let untracked = used;
+  const place = (n, parent) => {
+    devNodes.push(n);
+    if (parent) { parentOf[n.id] = parent; links.push({ source: parent, target: n.id, value: n.value }); } else untracked -= n.value;
+  };
+  devices.forEach((d, idx) => {
+    const id = d.stat_rate;
+    if (!id) return;
+    const parent = effectiveParent(d.included_in_stat);
+    if (!rendered.has(id)) {
+      const key = parent ?? 'home';
+      if (!small.has(key)) small.set(key, []);
+      small.get(key).push({ d, idx, parent });
+      smallStats.add(d.stat_consumption);
+      return;
+    }
+    place({ id, label: label(d), value: values.get(id), color: colorOf(d, idx), entityId: id, dead: watts(states[id]) === null }, parent);
   });
-
-  const kids = [];
-  let floor = pad;
-  for (const n of nodes) {
-    if (!n.children.length) continue;
-    const hs = n.children.map((c) => c.w * scale);
-    const slot = hs.map((h) => Math.max(h, 22));
-    const block = slot.reduce((a, s) => a + s, 0) + 6 * (slot.length - 1);
-    let cy = Math.max(n.top + n.h / 2 - block / 2, floor);
-    let from = n.top;
-    n.children.forEach((c, i) => {
-      const top = cy + (slot[i] - hs[i]) / 2;
-      const s = { key: c.key, w: c.w, color: c.color, xs: [x2, x2, x3], a: [from, from + hs[i]], b: [top, top + hs[i]], tier: 2 };
-      streams.push(s);
-      kids.push({ ...c, x: x3, top, h: hs[i], stream: s });
-      from += hs[i];
-      cy += slot[i] + 6;
+  small.forEach((all, key) => {
+    // A small device inside another small device is already counted in it.
+    const list = all.filter(({ d }) => {
+      for (let a = d.included_in_stat, hops = 0; a && hops < devices.length; hops++) {
+        if (renderedId(a)) return true;
+        if (smallStats.has(a)) return false;
+        a = byStat.get(a)?.included_in_stat;
+      }
+      return true;
     });
-    floor = cy + 4;
-  }
-  // Push the device column back up if it ran off the bottom.
-  const over = kids.length ? kids[kids.length - 1].top + kids[kids.length - 1].h - (H - pad) : 0;
-  if (over > 0) kids.forEach((k) => { k.top -= over; k.stream.b = [k.stream.b[0] - over, k.stream.b[1] - over]; });
-
-  const sum = tree.sources.reduce((a, s) => a + s.w, 0) || 1;
-  let sy = homeTop;
-  const sources = tree.sources.map((s) => {
-    const h = (s.w / sum) * hh;
-    const out = { ...s, top: sy, h };
-    sy += h;
-    return out;
+    const total = list.reduce((s, { d }) => s + values.get(d.stat_rate), 0);
+    if (total <= 0) return;
+    if (list.length === 1) {
+      const { d, idx, parent } = list[0];
+      place({ id: d.stat_rate, label: label(d), value: values.get(d.stat_rate), color: colorOf(d, idx), entityId: d.stat_rate, dead: watts(states[d.stat_rate]) === null }, parent);
+    } else {
+      place({ id: `other_${key}`, label: 'Other', value: Math.ceil(total), color: colors.Other || COLOR.other }, key === 'home' ? undefined : key);
+    }
   });
-  return { W, H, x0, x1, x2, x3, homeTop, hh, nodes, kids, sources, streams };
+  for (const pid of new Set(Object.values(parentOf))) {
+    const p = devNodes.find((n) => n.id === pid);
+    if (!p) continue;
+    const rest = p.value - devNodes.reduce((s, n) => (parentOf[n.id] === pid ? s + n.value : s), 0);
+    if (rest > 1) place({ id: `untracked_${pid}`, label: 'Untracked', value: rest, color: colors.Untracked || COLOR.untracked }, pid);
+  }
+
+  const top = devNodes.filter((n) => !parentOf[n.id]);
+  if (groupByArea || groupByFloor) {
+    const groups = new Map();
+    for (const n of top) {
+      const { area, floor } = context(hass, n.id);
+      const f = groupByFloor && floor ? floor : null;
+      const a = groupByArea && area ? area : null;
+      const key = `${f?.floor_id ?? ''}|${a?.area_id ?? ''}`;
+      if (!groups.has(key)) groups.set(key, { f, a, devs: [] });
+      groups.get(key).devs.push(n);
+    }
+    const floorSum = new Map();
+    for (const g of groups.values()) if (g.f) floorSum.set(g.f.floor_id, (floorSum.get(g.f.floor_id) || 0) + g.devs.reduce((s, n) => s + n.value, 0));
+    // A group takes its biggest device's color, so its stream isn't grey.
+    const biggest = (devs) => devs.reduce((a, n) => (n.value > a.value ? n : a), devs[0]).color;
+    for (const [fid, value] of floorSum) {
+      const devs = [...groups.values()].filter((g) => g.f?.floor_id === fid).flatMap((g) => g.devs);
+      add({ id: `floor_${fid}`, label: hass.floors[fid]?.name || fid, value, col: 2, color: biggest(devs) });
+      links.push({ source: 'home', target: `floor_${fid}`, value });
+    }
+    for (const g of groups.values()) {
+      let parent = g.f ? `floor_${g.f.floor_id}` : 'home';
+      if (g.a) {
+        const value = g.devs.reduce((s, n) => s + n.value, 0);
+        add({ id: `area_${g.a.area_id}`, label: g.a.name || g.a.area_id, value, col: 3, color: biggest(g.devs) });
+        links.push({ source: parent, target: `area_${g.a.area_id}`, value });
+        parent = `area_${g.a.area_id}`;
+      }
+      for (const n of g.devs) links.push({ source: parent, target: n.id, value: n.value });
+    }
+  } else {
+    for (const n of top) links.push({ source: 'home', target: n.id, value: n.value });
+  }
+  const sections = deviceSections(parentOf, devNodes);
+  sections.forEach((sec, i) => sec.forEach((n) => nodes.push({ ...n, col: 4 + i })));
+  if (untracked > 1) {
+    add({ id: 'untracked', label: 'Untracked', value: untracked, col: 3 + sections.length, color: colors.Untracked || COLOR.untracked });
+    links.push({ source: 'home', target: 'untracked', value: untracked });
+  }
+
+  const cols = [...new Set(nodes.map((n) => n.col))].sort((a, b) => a - b);
+  for (const n of nodes) n.col = cols.indexOf(n.col);
+  return { nodes, links: links.filter((l) => l.value > 0), used };
 }
 
-// Point at parameter u ∈ [0, 1] along a stream's centerline at fraction f of
-// its width: a straight run from xs[0] to xs[1], then a flat cubic to xs[2].
+// HA's findDevicesOverCap.
+function overCap(devices, max, rendered, values, parentOf) {
+  const grouped = new Set();
+  if (!max || max <= 0) return grouped;
+  const kids = new Map();
+  const seen = new Set();
+  devices.forEach((d, idx) => {
+    const id = d.stat_rate;
+    if (!id || !rendered.has(id) || seen.has(id)) return;
+    seen.add(id);
+    const key = parentOf(d) ?? 'home';
+    if (!kids.has(key)) kids.set(key, []);
+    kids.get(key).push({ id, value: values.get(id), idx });
+  });
+  const take = (id) => { if (grouped.has(id)) return; grouped.add(id); kids.get(id)?.forEach((c) => take(c.id)); };
+  const queue = ['home'];
+  const visited = new Set(queue);
+  while (queue.length) {
+    const children = kids.get(queue.shift());
+    if (!children) continue;
+    if (children.length > max) {
+      [...children].sort((a, b) => a.value - b.value || a.idx - b.idx)
+        .slice(0, Math.max(children.length - max, 2)).forEach((c) => take(c.id));
+    }
+    children.filter((c) => !grouped.has(c.id) && !visited.has(c.id)).forEach((c) => { visited.add(c.id); queue.push(c.id); });
+  }
+  return grouped;
+}
+
+function deviceSections(parentOf, devs) {
+  const parents = Object.values(parentOf);
+  const head = devs.filter((n) => parents.includes(n.id) && !(n.id in parentOf));
+  if (!head.length) return devs.length ? [devs] : [];
+  const rest = {};
+  for (const [c, p] of Object.entries(parentOf)) if (!head.some((n) => n.id === p)) rest[c] = p;
+  return [head, ...deviceSections(rest, devs.filter((n) => !head.includes(n)))];
+}
+
+function context(hass, entityId) {
+  const ent = hass.entities?.[entityId];
+  const areaId = ent?.area_id || hass.devices?.[ent?.device_id]?.area_id;
+  const area = areaId ? hass.areas?.[areaId] : null;
+  const floor = area?.floor_id ? hass.floors?.[area.floor_id] : null;
+  return { area, floor };
+}
+
+export function easeGraph(from, to, k) {
+  if (!from || k >= 1) return to;
+  const nv = new Map(from.nodes.map((n) => [n.id, n.value]));
+  const lv = new Map(from.links.map((l) => [`${l.source}>${l.target}`, l.value]));
+  const mix = (a = 0, b) => a + (b - a) * k;
+  return {
+    ...to,
+    used: mix(from.used, to.used),
+    nodes: to.nodes.map((n) => ({ ...n, value: mix(nv.get(n.id), n.value) })),
+    links: to.links.map((l) => ({ ...l, value: mix(lv.get(`${l.source}>${l.target}`), l.value) })),
+  };
+}
+
+const LAST = (id) => /^(other|untracked)/.test(id);
+
+// Each column is ordered by where its flow leaves the previous one, so
+// streams don't cross.
+export function layout(graph, W, H) {
+  const pad = 30;
+  const avail = H - 2 * pad;
+  const ncol = Math.max(...graph.nodes.map((n) => n.col), 1) + 1;
+  const left = W * 0.09;
+  const right = W * 0.82;
+  const xs = Array.from({ length: ncol }, (_, i) => left + ((right - left) * i) / (ncol - 1));
+  const outSum = (id) => graph.links.reduce((a, l) => (l.source === id ? a + l.value : a), 0);
+  const colSum = xs.map((_, c) => graph.nodes.reduce((s, n) => (n.col === c ? s + Math.max(n.value, outSum(n.id)) : s), 0));
+  const scale = Math.max(...colSum) > 0 ? (avail * 0.7) / Math.max(...colSum) : 0;
+  const byId = new Map(graph.nodes.map((n) => [n.id, { ...n, x: xs[n.col], h: n.value * scale, out: [], in: [] }]));
+  const links = graph.links.filter((l) => byId.has(l.source) && byId.has(l.target)).map((l) => ({ ...l, w: l.value * scale }));
+  for (const l of links) { byId.get(l.source).out.push(l); byId.get(l.target).in.push(l); }
+  // Meter skew can make a node's links outweigh its own value; fit them.
+  const sum = (ls) => ls.reduce((a, l) => a + l.w, 0);
+  for (const n of byId.values()) n.h = Math.max(n.h, sum(n.in), sum(n.out));
+  const order = (a, b) => (a.target === 'home' ? -1 : b.target === 'home' ? 1 : 0) || LAST(a.target) - LAST(b.target) || b.value - a.value;
+
+  for (let c = 0; c < ncol; c++) {
+    const col = [...byId.values()].filter((n) => n.col === c);
+    for (const n of col) n.anchor = n.in.length ? Math.min(...n.in.map((l) => l.sy)) : 0;
+    col.sort((a, b) => a.anchor - b.anchor || LAST(a.id) - LAST(b.id) || b.value - a.value);
+    let room = 24;
+    const fits = () => col.reduce((s, n) => s + Math.max(n.h, room) + 4, 0) <= avail;
+    while (room > 14 && !fits()) room -= 1;
+    if (c === 0 || col.every((n) => !n.in.length)) {
+      const gap = 16;
+      let y = pad + (avail - col.reduce((s, n) => s + n.h, 0) - gap * (col.length - 1)) / 2;
+      for (const n of col) { n.top = y; y += n.h + gap; }
+    } else {
+      let floor = pad;
+      for (const n of col) {
+        const slot = Math.max(n.h, room);
+        n.top = Math.max(n.anchor, floor + (slot - n.h) / 2);
+        floor = n.top + n.h + (slot - n.h) / 2 + 4;
+      }
+      const over = floor - 4 - (H - pad);
+      if (over > 0) for (const n of col) n.top -= over;
+    }
+    for (const n of col) {
+      let y = n.top;
+      for (const l of n.out.sort(order)) { l.sy = y; y += l.w; }
+    }
+  }
+  for (const n of byId.values()) {
+    let y = n.top;
+    for (const l of n.in.sort((a, b) => a.sy - b.sy)) { l.ty = y; y += l.w; }
+  }
+  const streams = links.map((l) => {
+    const s = byId.get(l.source);
+    const t = byId.get(l.target);
+    return { key: `${l.source}>${l.target}`, w: l.value, color: l.target === 'home' ? s.color : t.color, c0: s.col, c1: t.col,
+      xs: [s.x, s.x, t.x], a: [l.sy, l.sy + l.w], b: [l.ty, l.ty + l.w] };
+  });
+  return { ncol, nodes: [...byId.values()], streams };
+}
+
+// The same curve as the SVG path, so particles stay on their stream.
 const bez = (p0, p1, p2, p3, u) => {
   const v = 1 - u;
   return v * v * v * p0 + 3 * v * v * u * p1 + 3 * v * u * u * p2 + u * u * u * p3;
@@ -191,7 +336,7 @@ export function pointAt(s, f, u) {
 
 class EdgelitEnergyCard extends HTMLElement {
   setConfig(config) {
-    this._config = { min_watts: 100, ...config };
+    this._config = { group_by_area: true, group_by_floor: true, max_devices: MAX_DEVICES, ...config };
     this._prefs = null;
     this._particles = new Map();
   }
@@ -246,16 +391,15 @@ class EdgelitEnergyCard extends HTMLElement {
     }
   }
 
-  // Take new power values and start easing toward them.
   _update() {
     if (!this._prefs || !this._hass) return;
     this._updated = Date.now();
     const c = this._config;
     this._from = this._shown || null;
-    this._target = buildTree(this._prefs, this._hass.states, { home: c.home, minWatts: c.min_watts, colors: c.colors });
+    this._target = buildGraph(this._prefs, this._hass, { groupByArea: c.group_by_area, groupByFloor: c.group_by_floor, maxDevices: c.max_devices, colors: c.colors });
     this._easeStart = performance.now();
     const rate = c.price ? parseFloat(this._hass.states[c.price]?.state) : NaN;
-    const use = this._target.total - this._target.charging;
+    const use = this._target.used;
     const $ = (id) => this.shadowRoot.getElementById(id);
     $('title').textContent = c.title || 'WHERE YOUR POWER IS GOING';
     $('total').innerHTML = `<b>${fmtW(use)}</b>${Number.isNaN(rate) ? '' : `<span class="dim">$${((use / 1000) * rate).toFixed(2)}/hr</span>`}`;
@@ -269,18 +413,16 @@ class EdgelitEnergyCard extends HTMLElement {
       if (now - last < FRAME_MS) return;
       const dt = Math.min(now - last, 200) / 1000;
       last = now;
-      if (this._target && (this._shown !== this._target)) this._draw(now);
+      if (this._target && this._shown !== this._target) this._draw(now);
       this._animate(dt);
     };
     this._raf = requestAnimationFrame(tick);
   }
 
-  // Rebuild the streams from the eased tree.
   _draw(now = performance.now()) {
     if (!this._target) return;
-    const flow = this.shadowRoot.getElementById('flow');
     if (!this._size) {
-      const r = flow.getBoundingClientRect();
+      const r = this.shadowRoot.getElementById('flow').getBoundingClientRect();
       if (!r.width || !r.height) return;
       this._size = [r.width, r.height];
       const cv = this.shadowRoot.getElementById('cv');
@@ -289,69 +431,39 @@ class EdgelitEnergyCard extends HTMLElement {
       cv.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
     }
     const k = Math.min((now - this._easeStart) / EASE_MS, 1);
-    const tree = easeTree(this._from, this._target, k * k * (3 - 2 * k));
+    const graph = easeGraph(this._from, this._target, k * k * (3 - 2 * k));
     if (k >= 1) this._shown = this._target;
-    this._geo = layout(tree, ...this._size);
-    this.shadowRoot.getElementById('svg').innerHTML = this._svg(this._geo, tree);
+    this._geo = layout(graph, ...this._size);
+    this.shadowRoot.getElementById('svg').innerHTML = this._svg(this._geo);
   }
 
-  _svg(g, tree) {
-    const { x0, x1, x2, x3, homeTop, hh } = g;
-    const xm = (x1 + x2) / 2;
-    const xk = (x2 + x3) / 2;
+  _svg(g) {
+    const op = (c) => (0.1 + (0.5 * c) / (g.ncol - 1)).toFixed(2);
     const defs = [];
-    const paths = [];
-    for (const [i, s] of g.streams.entries()) {
+    const paths = g.streams.map((s, i) => {
+      const [x0, , x1] = s.xs;
+      const xm = (x0 + x1) / 2;
       const [ya, yb] = s.a;
       const [ta, tb] = s.b;
-      if (s.tier === 1) {
-        const mid = (x1 - x0) / (x2 - x0);
-        defs.push(`<linearGradient id="g${i}" gradientUnits="userSpaceOnUse" x1="${x0}" x2="${x2}"><stop offset="0" stop-color="${s.color}" stop-opacity=".10"/><stop offset="${mid}" stop-color="${s.color}" stop-opacity=".22"/><stop offset="1" stop-color="${s.color}" stop-opacity=".6"/></linearGradient>`);
-        paths.push(`<path d="M${x0},${ya} L${x1},${ya} C${xm},${ya} ${xm},${ta} ${x2},${ta} L${x2},${tb} C${xm},${tb} ${xm},${yb} ${x1},${yb} L${x0},${yb}Z" fill="url(#g${i})"/>`);
-      } else {
-        defs.push(`<linearGradient id="g${i}" gradientUnits="userSpaceOnUse" x1="${x2}" x2="${x3}"><stop offset="0" stop-color="${s.color}" stop-opacity=".25"/><stop offset="1" stop-color="${s.color}" stop-opacity=".6"/></linearGradient>`);
-        paths.push(`<path d="M${x2},${ya} C${xk},${ya} ${xk},${ta} ${x3},${ta} L${x3},${tb} C${xk},${tb} ${xk},${yb} ${x2},${yb}Z" fill="url(#g${i})"/>`);
-      }
-    }
-    // The source column is striped with the colors of the streams leaving it.
-    const stops = g.nodes.flatMap((n) => {
-      const a = hh ? (n.stream.a[0] - homeTop) / hh : 0;
-      const b = hh ? (n.stream.a[1] - homeTop) / hh : 0;
-      return [`<stop offset="${a}" stop-color="${n.color}"/>`, `<stop offset="${b}" stop-color="${n.color}"/>`];
+      defs.push(`<linearGradient id="g${i}" gradientUnits="userSpaceOnUse" x1="${x0}" x2="${x1}"><stop offset="0" stop-color="${s.color}" stop-opacity="${op(s.c0)}"/><stop offset="1" stop-color="${s.color}" stop-opacity="${op(s.c1)}"/></linearGradient>`);
+      return `<path d="M${x0},${ya} C${xm},${ya} ${xm},${ta} ${x1},${ta} L${x1},${tb} C${xm},${tb} ${xm},${yb} ${x0},${yb}Z" fill="url(#g${i})"/>`;
     });
-    defs.push(`<linearGradient id="stripe" gradientUnits="userSpaceOnUse" x1="0" x2="0" y1="${homeTop}" y2="${homeTop + hh}">${stops.join('')}</linearGradient>`);
-
-    const line = (x, top, h, color) => `<line x1="${x}" x2="${x}" y1="${top}" y2="${top + Math.max(h, 1)}" stroke="${color}" stroke-width="3" stroke-linecap="round"/>`;
-    const label = (x, y, n, big) => `<text x="${x}" y="${y}" class="${big ? 'lb' : 'ls'}${n.dead ? ' dead' : ''}">${esc(n.name)} <tspan class="v">${fmtW(n.w)}</tspan></text>`;
-    const items = [];
-    for (const n of g.nodes) {
+    const items = g.nodes.map((n) => {
       const cy = n.top + n.h / 2;
+      const attr = n.entityId ? ` data-id="${esc(n.entityId)}"` : '';
+      const line = `<line x1="${n.x}" x2="${n.x}" y1="${n.top}" y2="${n.top + Math.max(n.h, 1)}" stroke="${n.color}" stroke-width="3" stroke-linecap="round"/>`;
+      if (n.id === 'home') return `${line}<text x="${n.x}" y="${n.top - 12}" class="home">Home · ${fmtW(n.value)}</text>`;
+      if (n.col === 0) return `<g${attr}>${line}<text x="${n.x - 16}" y="${cy - 2}" class="src">${esc(n.label)}</text><text x="${n.x - 16}" y="${cy + 18}" class="srcv">${fmtW(n.value)}</text></g>`;
       const big = n.h >= 18;
-      const attr = n.id ? ` data-id="${esc(n.id)}"` : '';
-      if (n.children.length) {
-        const w = (n.name.length + fmtW(n.w).length + 1) * (big ? 9.5 : 8) + 16;
-        items.push(`<g${attr}>${line(n.x, n.top, n.h, n.color)}<rect x="${n.x + 8}" y="${cy - 14}" width="${w}" height="28" rx="7" class="bd"/>${label(n.x + 16, cy + 5.5, n, big)}</g>`);
-      } else {
-        items.push(`<g${attr}>${line(n.x, n.top, n.h, n.color)}${label(n.x + 16, cy + 5.5, n, big)}</g>`);
-      }
-    }
-    for (const c of g.kids) {
-      const attr = c.id ? ` data-id="${esc(c.id)}"` : '';
-      items.push(`<g${attr}>${line(c.x, c.top, c.h, c.color)}${label(c.x + 14, c.top + c.h / 2 + 5, c, false)}</g>`);
-    }
-    items.push(`<line x1="${x1}" x2="${x1}" y1="${homeTop}" y2="${homeTop + hh}" stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" opacity=".8"/>`);
-    items.push(`<text x="${x1}" y="${homeTop - 12}" class="home">Home · ${fmtW(tree.total - tree.charging)}</text>`);
-    for (const s of g.sources) {
-      items.push(`<g data-id="${esc(s.id)}"><line x1="${x0}" x2="${x0}" y1="${s.top + 2}" y2="${s.top + Math.max(s.h - 2, 1)}" stroke="url(#stripe)" stroke-width="3" stroke-linecap="round"/>
-        <text x="${x0 - 16}" y="${s.top + s.h / 2 - 2}" class="src">${esc(s.name)}</text><text x="${x0 - 16}" y="${s.top + s.h / 2 + 18}" class="srcv">${fmtW(s.w)}</text></g>`);
-    }
-    const bat = tree.battery;
-    if (bat && Math.abs(bat.w) < 10) items.push(`<text x="${x0 - 16}" y="${homeTop + hh + 30}" class="idle" data-id="${esc(bat.id)}">Battery idle</text>`);
+      const text = `<text x="${n.x + 16}" y="${cy + 5.5}" class="${big ? 'lb' : 'ls'}${n.dead ? ' dead' : ''}">${esc(n.label)} <tspan class="v">${fmtW(n.value)}</tspan></text>`;
+      if (!n.out.length) return `<g${attr}>${line}${text}</g>`;
+      const w = (n.label.length + fmtW(n.value).length + 1) * (big ? 9.5 : 8) + 16;
+      return `<g${attr}>${line}<rect x="${n.x + 8}" y="${cy - 14}" width="${w}" height="28" rx="7" class="bd"/>${text}</g>`;
+    });
     return `<defs>${defs.join('')}</defs><g class="streams">${paths.join('')}</g>${items.join('')}`;
   }
 
-  // Move the particles and paint them. Each keeps its place `t` along its
-  // stream, so motion carries on through re-layouts.
+  // Particles keep `t` across re-layouts, so motion doesn't jump.
   _animate(dt) {
     const cv = this.shadowRoot.getElementById('cv');
     const ctx = cv.getContext?.('2d');
@@ -405,12 +517,11 @@ text { font-family: Manrope, system-ui, sans-serif; fill:#e2e8f0; }
 .bd { fill:rgba(10,14,21,.72); }
 .home { font-size:16px; font-weight:800; text-anchor:middle; }
 .src { font-size:17px; font-weight:800; text-anchor:end; } .srcv { font-size:14px; text-anchor:end; fill:var(--dim); }
-.idle { font-size:13px; text-anchor:end; fill:#34d399; opacity:.7; }
 [data-id] { cursor:pointer; -webkit-tap-highlight-color:transparent; }
 `;
 
 if (!customElements.get('edgelit-energy-card')) {
   customElements.define('edgelit-energy-card', EdgelitEnergyCard);
   window.customCards = window.customCards || [];
-  window.customCards.push({ type: 'edgelit-energy-card', name: 'Edgelit energy', description: 'Live power flow from the Energy settings tree.' });
+  window.customCards.push({ type: 'edgelit-energy-card', name: 'Edgelit energy', description: 'Live power flow, built like the Energy dashboard\'s power sankey.' });
 }

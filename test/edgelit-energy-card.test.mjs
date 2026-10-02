@@ -1,5 +1,4 @@
-// Drives the pure helpers of edgelit-energy-card against a canned
-// `energy/get_prefs` payload and canned states.
+// The graph must match what HA's power sankey draws for the same input.
 import assert from 'node:assert/strict';
 
 globalThis.HTMLElement = class {};
@@ -10,7 +9,6 @@ globalThis.window = {};
 const card = await import('../dist/edgelit-energy-card.js');
 const st = (v, unit = 'W') => ({ state: String(v), attributes: { unit_of_measurement: unit } });
 
-// Units and formulas
 assert.equal(card.watts(st(1.5, 'kW')), 1500);
 assert.equal(card.watts(st(42)), 42);
 assert.equal(card.watts(st('unavailable')), null);
@@ -21,64 +19,82 @@ assert.equal(card.particleCount(10), 2);
 assert.equal(card.particleCount(2500), 10);
 assert.equal(card.fmtW(2400), '2.4 kW');
 assert.equal(card.fmtW(130.4), '130 W');
-assert.equal(card.shade('#000000', 0), '#2e2e2e');
 
+const dev = (name, id, parent) => ({ name, stat_consumption: `${id}_kwh`, stat_rate: `sensor.${id}`, ...(parent ? { included_in_stat: `${parent}_kwh` } : {}) });
 const prefs = {
   energy_sources: [
-    { type: 'grid', stat_energy_from: 'sensor.grid_kwh', stat_rate: 'sensor.grid' },
-    { type: 'battery', stat_energy_from: 'sensor.out', stat_energy_to: 'sensor.in', stat_rate: 'sensor.bat' },
+    { type: 'grid', stat_energy_from: 'g_kwh', stat_rate: 'sensor.grid' },
+    { type: 'battery', stat_energy_from: 'o', stat_energy_to: 'i', stat_rate: 'sensor.bat' },
   ],
   device_consumption: [
-    { name: 'A/C', stat_consumption: 'sensor.ac_kwh', stat_rate: 'sensor.ac' },
-    { name: 'Office', stat_consumption: 'sensor.office_kwh', stat_rate: 'sensor.office' },
-    { name: 'Lamp', stat_consumption: 'sensor.lamp_kwh', stat_rate: 'sensor.lamp' },
-    { name: 'No power', stat_consumption: 'sensor.np_kwh' },
-    { name: 'PC', stat_consumption: 'sensor.pc_kwh', stat_rate: 'sensor.pc', included_in_stat: 'sensor.office_kwh' },
-    { name: 'Server', stat_consumption: 'sensor.srv_kwh', stat_rate: 'sensor.srv', included_in_stat: 'sensor.office_kwh' },
-    { name: 'Charger', stat_consumption: 'sensor.chg_kwh', stat_rate: 'sensor.chg', included_in_stat: 'sensor.office_kwh' },
+    dev('A/C', 'ac'), dev('Hot tub', 'tub'), dev('Office', 'office'), dev('Lamp', 'lamp'), dev('Fan', 'fan'), dev('Clock', 'clock'),
+    { name: 'No power', stat_consumption: 'np_kwh' },
+    dev('PC', 'pc', 'office'), dev('Server', 'srv', 'office'), dev('Charger', 'chg', 'office'),
   ],
 };
-const states = {
-  'sensor.grid': st(3000), 'sensor.bat': st(0.5, 'kW'),
-  'sensor.ac': st(2.0, 'kW'), 'sensor.office': st(900), 'sensor.lamp': st(40),
-  'sensor.pc': st(500), 'sensor.srv': st(150), 'sensor.chg': st(30),
+const hass = {
+  states: {
+    'sensor.grid': st(10000), 'sensor.bat': st(-4000),
+    'sensor.ac': st(2.0, 'kW'), 'sensor.tub': st(2000), 'sensor.office': st(900),
+    'sensor.lamp': st(3), 'sensor.fan': st(2), 'sensor.clock': st('unavailable'),
+    'sensor.pc': st(500), 'sensor.srv': st(150), 'sensor.chg': st(4),
+  },
+  entities: { 'sensor.ac': { device_id: 'd1' }, 'sensor.tub': { area_id: 'garage' } },
+  devices: { d1: { area_id: 'garage' } },
+  areas: { garage: { area_id: 'garage', name: 'Garage' } },
+  floors: {},
 };
+const node = (g, id) => g.nodes.find((n) => n.id === id);
+const link = (g, s, t) => g.links.find((l) => l.source === s && l.target === t);
 
-// Tree from included_in_stat; remainders; folding below min_watts
-const t = card.buildTree(prefs, states, { minWatts: 100 });
-assert.deepEqual(t.sources.map((s) => [s.name, s.w]), [['Grid', 3000], ['Battery', 500]]);
-assert.equal(t.total, 3500, 'total is the sum of sources');
-assert.deepEqual(t.nodes.map((n) => [n.name, n.w]), [['A/C', 2000], ['Office', 900], ['Other', 40], ['Untracked', 560]]);
-const office = t.nodes[1];
-assert.deepEqual(office.children.map((c) => [c.name, c.w]), [['PC', 500], ['Server', 150], ['Untracked', 250]],
-  'children sorted by power, Charger folded into the circuit remainder');
-assert.ok(office.children.every((c) => c.color), 'children take a shade of the circuit');
-assert.equal(t.nodes[0].color, '#38bdf8', 'tier-1 color follows Energy-settings order');
+// Sources: grid feeds the house and the charging battery, as HA routes it.
+const g = card.buildGraph(prefs, hass);
+assert.equal(g.used, 6000);
+assert.equal(link(g, 'grid', 'home').value, 6000);
+assert.equal(link(g, 'grid', 'battery_in').value, 4000);
+assert.equal(node(g, 'battery_in').col, 1);
 
-// Untracked clamps at zero when meters skew; a charging battery is a load.
-const skew = card.buildTree(prefs, { ...states, 'sensor.grid': st(2500), 'sensor.bat': st(-400) }, { minWatts: 100 });
-assert.equal(skew.total, 2500);
-assert.equal(skew.charging, 400);
-assert.ok(!skew.nodes.some((n) => n.name === 'Untracked'), 'negative remainder draws nothing');
-assert.ok(skew.nodes.some((n) => n.key === 'charging' && n.w === 400));
+// Area grouping: A/C via its device's area, the hot tub via its own.
+assert.equal(node(g, 'area_garage').value, 4000);
+assert.equal(link(g, 'area_garage', 'sensor.ac').value, 2000);
+assert.equal(link(g, 'area_garage', 'sensor.tub').value, 2000);
+assert.ok(link(g, 'home', 'sensor.office'), 'devices with no area hang off home');
 
-// A home entity sets the total; an unavailable circuit counts as 0 W, dimmed.
-const home = card.buildTree(prefs, { ...states, 'sensor.home': st(3200), 'sensor.ac': st('unavailable') }, { home: 'sensor.home', minWatts: 100 });
-assert.equal(home.total, 3200);
-assert.ok(home.nodes.find((n) => n.name === 'Other').w === 40, 'dead A/C folds as 0 W');
+// Threshold is 0.1% of the house (6 W): Lamp and Fan fold into one "Other";
+// a lone small child (Charger, 4 W) still shows by name.
+assert.equal(node(g, 'other_home').value, 5);
+assert.ok(!node(g, 'sensor.lamp') && !node(g, 'sensor.clock'));
+assert.ok(link(g, 'sensor.office', 'sensor.chg'), 'lone small device keeps its name');
+assert.ok(!node(g, 'np_kwh'), 'devices without a power sensor are left out');
 
-// Easing moves widths part way and grows new nodes from zero.
-const half = card.easeTree(skew, t, 0.5);
-assert.equal(half.total, 3000);
-assert.equal(half.nodes.find((n) => n.key === 'untracked').w, 280);
+assert.equal(node(g, 'untracked_sensor.office').value, 246);
+assert.equal(node(g, 'untracked').value, 6000 - 2000 - 2000 - 900 - 5);
 
-// Layout stays inside the box and particles ride the stream.
-const g = card.layout(t, 2560, 600);
-for (const n of [...g.nodes, ...g.kids]) assert.ok(n.top >= 0 && n.top + n.h <= 600, `${n.name} fits`);
-const s = g.streams[0];
-assert.deepEqual(card.pointAt(s, 0, 0), [g.x0, s.a[0]]);
+// Columns: sources, home, areas, circuits, devices; empty floor column dropped.
+assert.deepEqual(['grid', 'home', 'area_garage', 'sensor.office', 'sensor.pc'].map((id) => node(g, id).col), [0, 1, 2, 3, 4]);
+
+const flat = card.buildGraph(prefs, hass, { groupByArea: false, groupByFloor: false });
+assert.ok(link(flat, 'home', 'sensor.ac') && !node(flat, 'area_garage'));
+
+// The cap folds the smallest named children into "Other", subtree and all:
+// with 2 allowed at the top, Office (and its devices) and A/C fold.
+const capped = card.buildGraph(prefs, hass, { groupByArea: false, maxDevices: 2 });
+assert.ok(node(capped, 'sensor.tub') && !node(capped, 'sensor.office') && !node(capped, 'sensor.pc'));
+assert.equal(node(capped, 'other_home').value, 2905);
+
+const dis = card.buildGraph(prefs, { ...hass, states: { ...hass.states, 'sensor.grid': st(1000), 'sensor.bat': st(5000) } });
+assert.equal(link(dis, 'battery', 'home').value, 5000);
+assert.equal(link(dis, 'grid', 'home').value, 1000);
+
+const half = card.easeGraph({ nodes: [], links: [], used: 0 }, g, 0.5);
+assert.equal(half.used, 3000);
+assert.equal(node(half, 'area_garage').value, 2000);
+
+const geo = card.layout(g, 2560, 600);
+for (const n of geo.nodes) assert.ok(n.top >= 0 && n.top + n.h <= 600, `${n.label} fits`);
+const s = geo.streams.find((x) => x.key === 'home>sensor.office');
 const end = card.pointAt(s, 1, 1);
-assert.ok(Math.abs(end[0] - g.x2) < 1e-9 && Math.abs(end[1] - s.b[1]) < 1e-9);
+assert.ok(Math.abs(end[0] - geo.nodes.find((n) => n.id === 'sensor.office').x) < 1e-9);
 
 assert.ok(registry['edgelit-energy-card'], 'card registers');
 console.log('ok');

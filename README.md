@@ -11,8 +11,9 @@ drop to two columns.
   chart, a card per host with load and memory plus either pods or inference
   activity, and an infrastructure or Claude-usage card at the end.
 - **`edgelit-energy-card`** draws live power as a flow from the grid and
-  battery through the house to each circuit and the devices under it, with
-  particles that move faster on busier circuits.
+  battery through the house to each circuit and the devices under it, matching
+  the Energy dashboard's power sankey, with particles that move faster on
+  busier circuits.
 
 ## Install
 
@@ -119,25 +120,32 @@ changes during the day makes that figure an estimate.
 
 ## `edgelit-energy-card`
 
-The card reads its tree from Home Assistant's Energy settings, so it needs no
-entity list:
+The card builds its graph the same way as Home Assistant's own power sankey
+(the Energy dashboard's "Energy flow" card), from the Energy settings, so the
+two always show the same devices. It needs no entity list:
 
-- **Sources**: each grid and battery source with a power sensor. A charging
-  battery shows as a load under the house. Solar is not drawn.
-- **Circuits**: each individual device with a power sensor.
-- **Devices**: a device whose "upstream device" (`included_in_stat`) is a
-  circuit is drawn under that circuit. Deeper levels are not drawn.
-- **Untracked**: the house minus its circuits, and a circuit minus its devices.
+- **Sources**: each grid and battery source with a power sensor. Power that
+  charges the battery flows from the grid to a battery node beside the house.
+  Solar is not drawn.
+- **Devices**: each individual device with a power sensor, nested under its
+  "upstream device" (`included_in_stat`) to any depth.
+- **Grouping**: top-level devices are grouped by the floor and area of their
+  power sensor.
+- **Small devices**: devices drawing under 0.1% of the house fold into an
+  "Other" node per parent; a lone small device keeps its name. A parent shows
+  at most `max_devices` named children.
+- **Untracked**: the house minus its devices, and a device minus its children.
 
-Devices without a power sensor are left out. Names and colors follow the
-Energy settings, in order, so reordering them recolors the circuits.
+Devices without a power sensor are left out. Device colors follow their order
+in the Energy settings, so reordering them recolors the diagram.
 
 | Key | Default | Purpose |
 |---|---|---|
 | `title` | `WHERE YOUR POWER IS GOING` | Header text. |
-| `home` | sum of sources | Power sensor for total house use, when the sources alone don't give it. |
 | `price` | none | $/kWh sensor; adds `$/hr` to the header. |
-| `min_watts` | `100` | Circuits below this fold into "Other"; devices below it fold into their circuit. |
+| `group_by_area` | `true` | Group top-level devices by area. |
+| `group_by_floor` | `true` | Group top-level devices by floor. |
+| `max_devices` | `20` | Named children per parent before the smallest fold into "Other". |
 | `colors` | built-in palette | Map of display name to color. |
 
 The card re-reads the Energy settings every 5 minutes, so a change there shows
